@@ -1,0 +1,114 @@
+#!/bin/bash
+
+# ==============================
+# Created: Prime Murcia
+# Autobackup Script
+# ==============================
+
+# MySQL credentials
+MYSQL_USER="root"
+MYSQL_PASS="testing"
+
+# Directories to back up
+WEB_ROOT="/var/www/html"
+
+# Backup directories (mounted CIFS share)
+CIFS_SHARE="//ip address/testing"
+CIFS_MOUNT="/home/backupfiles"
+WEB_BACKUP_DIR="$CIFS_MOUNT/webfiles"
+DB_BACKUP_DIR="$CIFS_MOUNT/database"
+
+# Credentials file for CIFS
+CIFS_CREDENTIALS="/etc/prime"
+
+# Retention period in days
+RETENTION_DAYS=5
+
+# Date format for backups
+DATE=$(date +"%Y-%m-%d_%H-%M-%S")
+
+# Log file
+LOG_FILE="/var/log/backup.log"
+
+# ==============================
+# Functions
+# ==============================
+
+log() {
+    echo "[$(date +"%Y-%m-%d %H:%M:%S")] $1" | tee -a "$LOG_FILE"
+}
+
+mount_cifs() {
+    log "Mounting CIFS share $CIFS_SHARE to $CIFS_MOUNT"
+    sudo mount -t cifs "$CIFS_SHARE" "$CIFS_MOUNT" -o credentials="$CIFS_CREDENTIALS",uid=prime,gid=prime,vers=3.0
+    if [ $? -eq 0 ]; then
+        log "Successfully mounted $CIFS_SHARE"
+    else
+        log "Error: Failed to mount $CIFS_SHARE"
+        exit 1
+    fi
+}
+
+unmount_cifs() {
+    log "Unmounting CIFS share from $CIFS_MOUNT"
+    sudo umount "$CIFS_MOUNT"
+    if [ $? -eq 0 ]; then
+        log "Successfully unmounted $CIFS_MOUNT"
+    else
+        log "Error: Failed to unmount $CIFS_MOUNT"
+        exit 1
+    fi
+}
+
+# ==============================
+# Main Backup Process
+# ==============================
+
+# Ensure Backup Directories Exist
+log "Ensuring backup directories exist"
+mkdir -p "$WEB_BACKUP_DIR"
+mkdir -p "$DB_BACKUP_DIR"
+
+# Mount CIFS Share
+mount_cifs
+
+# Backup /var/www/html
+WEB_BACKUP_FILE="$WEB_BACKUP_DIR/html_backup_$DATE.tar.gz"
+log "Starting backup of $WEB_ROOT to $WEB_BACKUP_FILE"
+
+tar -czf "$WEB_BACKUP_FILE" -C "$WEB_ROOT" .
+if [ $? -eq 0 ]; then
+    log "Successfully backed up $WEB_ROOT to $WEB_BACKUP_FILE"
+else
+    log "Error: Failed to back up $WEB_ROOT"
+    unmount_cifs
+    exit 1
+fi
+
+# Backup All Databases
+DB_BACKUP_FILE="$DB_BACKUP_DIR/db_backup_$DATE.sql.gz"
+log "Starting database backup to $DB_BACKUP_FILE"
+
+mysqldump -u "$MYSQL_USER" -p"$MYSQL_PASS" --all-databases | gzip > "$DB_BACKUP_FILE"
+if [ $? -eq 0 ]; then
+    log "Successfully backed up databases to $DB_BACKUP_FILE"
+else
+    log "Error: Failed to back up databases"
+    unmount_cifs
+    exit 1
+fi
+
+# Delete Old Backups
+log "Deleting backups older than $RETENTION_DAYS days"
+
+find "$WEB_BACKUP_DIR" -type f -mtime +$RETENTION_DAYS -name "*.tar.gz" -exec rm {} \; -exec echo "Deleted {}" >> "$LOG_FILE" \;
+find "$DB_BACKUP_DIR" -type f -mtime +$RETENTION_DAYS -name "*.sql.gz" -exec rm {} \; -exec echo "Deleted {}" >> "$LOG_FILE" \;
+
+log "Old backups deleted"
+
+# Unmount CIFS Share
+unmount_cifs
+
+log "Backup process completed successfully"
+
+exit 0
